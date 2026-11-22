@@ -1,3 +1,9 @@
+## v0.2.1.dev0 (2026-11-22)
+
+- CLI: "not connected" says to pass -d or keep a session with hold (#258)
+- firmware download: a preview-only set names --preview, and an empty release list isn't cached (#257)
+- Wi-Fi boards keep every address they are reached at (#255)
+
 ## v0.2.0 (2026-11-17)
 
 - Install: pip install mcuctl, from PyPI (#252)
