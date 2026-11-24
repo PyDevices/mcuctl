@@ -58,7 +58,9 @@ STALL_TIMEOUT = 20.0
 #: Each login step (upgrade reply, password prompt, login reply, banner) waits
 #: at least this long, and 30 times the upgrade's measured round trip when
 #: that is longer, so a lossy link isn't abandoned halfway through the login.
-LOGIN_TIMEOUT_FLOOR = 5.0
+#: A board in Wi-Fi power saving, busy drawing, can take 4 s to answer the
+#: upgrade, so the floor leaves room for that.
+LOGIN_TIMEOUT_FLOOR = 10.0
 LOGIN_TIMEOUT_RTT_FACTOR = 30.0
 LOGIN_TIMEOUT_CEILING = 60.0
 #: Set this to a number of seconds to fix the login wait instead.
