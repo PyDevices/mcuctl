@@ -114,7 +114,9 @@ prompt, and mcuctl says the board is holding a session.
 
 mcuctl ends an abandoned login with a close frame and a clean TCP close, so the
 board sees it end, and it waits longer for each login step when the link is
-slow (at least 5 s, up to 60 s). Set `MCUCTL_WEBREPL_LOGIN_TIMEOUT` to a number
+slow (at least 10 s, up to 60 s). A board in Wi-Fi power saving answers
+only when its radio next wakes, and one busy drawing a screen has taken 4 s
+to answer the first step. Set `MCUCTL_WEBREPL_LOGIN_TIMEOUT` to a number
 of seconds to fix that wait yourself. If the slot is held anyway, reset the
 board, or run `import webrepl; webrepl.stop(); webrepl.start()` on it over USB
 serial.
