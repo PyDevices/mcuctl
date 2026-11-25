@@ -1,3 +1,9 @@
+## v0.2.1rc1 (2026-11-25)
+
+- omip skips what the firmware froze; WSL flashes a usbipd board with Linux esptool (#265)
+- firmware flash: an ESP32-S31 image goes at 0x2000, as its header says (#263)
+- WebREPL: each login step waits at least 10 s, for boards in power saving (#261)
+
 ## v0.2.1.dev0 (2026-11-22)
 
 - CLI: "not connected" says to pass -d or keep a session with hold (#258)
