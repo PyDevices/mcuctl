@@ -20,8 +20,8 @@ from __future__ import annotations
 import struct
 import tempfile
 import unittest
-from unittest import mock
 from pathlib import Path
+from unittest import mock
 
 from mcuctl.firmware import (
     _PARTITION_TABLE_OFFSET,
