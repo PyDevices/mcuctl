@@ -3673,6 +3673,64 @@ print(repr(_out))
                 elif not self.transport:
                     self._repl_mode = False
 
+    # What the board's firmware has of some modules, by omip's own rule on the
+    # board (omnipython's lib/omip.py): each name imported from .frozen alone,
+    # then forgotten. None when a copy in libs would run ahead of .frozen.
+    _OMIP_FIRMWARE_PROBE = (
+        "def _mcuctl_firmware(names, libs):\n"
+        " import sys, os\n"
+        " if '.frozen' not in sys.path:\n"
+        "  return None\n"
+        " ahead = [libs]\n"
+        " try:\n"
+        "  if os.getcwd() == libs:\n"
+        "   ahead.append('')\n"
+        " except Exception:\n"
+        "  pass\n"
+        " fz = sys.path.index('.frozen')\n"
+        " if any(a in sys.path and sys.path.index(a) < fz for a in ahead):\n"
+        "  return None\n"
+        " def one(name):\n"
+        "  before = dict(sys.modules)\n"
+        "  for key in before:\n"
+        "   if key == name or name.startswith(key + '.'):\n"
+        "    del sys.modules[key]\n"
+        "  path = sys.path[:]\n"
+        "  sys.path[:] = ['.frozen']\n"
+        "  try:\n"
+        "   m = __import__(name)\n"
+        "   for part in name.split('.')[1:]:\n"
+        "    m = getattr(m, part)\n"
+        "   return 'frozen' if hasattr(m, '__file__') else 'built-in'\n"
+        "  except ImportError as exc:\n"
+        "   msg = str(exc)\n"
+        "   if 'named ' not in msg:\n"
+        "    return None\n"
+        "   miss = msg.rpartition('named ')[2].strip(\"'\\\"\")\n"
+        "   return None if miss == name or name.startswith(miss + '.') else 'frozen'\n"
+        "  except Exception:\n"
+        "   return 'frozen'\n"
+        "  finally:\n"
+        "   sys.path[:] = path\n"
+        "   for key in list(sys.modules):\n"
+        "    if key not in before:\n"
+        "     del sys.modules[key]\n"
+        "   sys.modules.update(before)\n"
+        " found = [one(n) for n in names]\n"
+        " left = ()\n"
+        " path = sys.path[:]\n"
+        " sys.path[:] = ['.frozen']\n"
+        " try:\n"
+        "  import _omip_left_out\n"
+        "  left = tuple(_omip_left_out.MODULES)\n"
+        " except ImportError:\n"
+        "  pass\n"
+        " finally:\n"
+        "  sys.path[:] = path\n"
+        "  sys.modules.pop('_omip_left_out', None)\n"
+        " return (found, left)\n"
+    )
+
     def omip_install(
         self,
         packages: list[str],
@@ -3712,18 +3770,30 @@ print(repr(_out))
             if mpy:
                 t.exec("import sys")
                 channel = t.eval("getattr(sys.implementation, '_mpy', 0) & 0xFF") or "py"
+            # What the firmware has frozen in isn't copied, as omip on the board
+            # leaves it out: a frozen module runs ahead of a copy in /lib.
+            t.exec(self._OMIP_FIRMWARE_PROBE)
+
+            def firmware(names, libs):
+                answer = t.eval("_mcuctl_firmware(%r, %r)" % (names, libs))
+                if answer is None:
+                    return None
+                found, left = answer
+                return list(found), tuple(left)
+
             # Each package is laid out as its own `omip.install` would, so one
             # that names its own folder doesn't move where the others go.
             planned_files: list[tuple[str, omip.PlannedFile]] = []
             seen: set[str] = set()
+            logs: list[str] = []
             for spec in specs:
                 name, _, version = spec.partition("@")
                 _notify("mip_progress", {"package": spec, "target": resolved_target, "phase": "start"})
-                plan = omip.Plan(str(channel), resolved_target, seen=seen)
+                plan = omip.Plan(str(channel), resolved_target, seen=seen, firmware=firmware)
                 omip.walk(plan, name, version or None, indexes)
+                logs.extend(plan.logs)
                 planned_files.extend((plan.dest(f), f) for f in plan.files)
 
-            logs: list[str] = []
             downloads: list[tuple[str, bytes]] = []
             for dest, planned in planned_files:
                 if planned.short_hash and mp_mip._check_exists(t, dest, planned.short_hash):

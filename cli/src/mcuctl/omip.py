@@ -10,7 +10,9 @@ then on micropython-lib, and whatever it names under ``upstream`` in its JSON
 comes from micropython-lib. ``mip`` and mpremote ignore that key.
 
 Nothing here touches a board: `walk` returns the files, and the sidecar copies
-them.
+them. A package the board's firmware has frozen in is left out, as ``omip``
+leaves it out on the board, when the plan is given a way to ask the board
+(`Plan.firmware`).
 """
 
 from __future__ import annotations
@@ -19,7 +21,7 @@ import json
 import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Callable, Optional
 
 INDEX = "https://lib.omnipython.org"
 UPSTREAM = "https://micropython.org/pi/v2"
@@ -71,6 +73,12 @@ class Plan:
     seen: set[str] = field(default_factory=set)
     libs: str = ""
     roots: list[Root] = field(default_factory=list)
+    #: Asks the board about module names: ``firmware(names, libs)`` gives each
+    #: one's state ("frozen", "built-in" or None) and the modules the firmware
+    #: left out on purpose, or None when a copy in ``libs`` would run ahead of
+    #: a frozen one. Without it, nothing counts as frozen.
+    firmware: Optional[Callable[[list[str], str], Optional[tuple[list[Optional[str]], tuple[str, ...]]]]] = None
+    logs: list[str] = field(default_factory=list)
 
     def __post_init__(self):
         self.target = self.target.rstrip("/") or "/"
@@ -118,6 +126,51 @@ def fetch(url: str) -> Optional[bytes]:
         raise OmipError(f"Can't reach {url}: {getattr(e, 'reason', e)}") from e
 
 
+def module_names(paths: list[str]) -> list[str]:
+    """The modules a package's files would be imported as, leaving out those inside another of them."""
+    names = []
+    for path in paths:
+        stem, dot, ext = path.rpartition(".")
+        if not dot or ext not in ("py", "mpy"):
+            continue
+        if stem.endswith("/__init__"):
+            stem = stem[: -len("/__init__")]
+        names.append(stem.replace("/", "."))
+    return [n for n in names if not any(n.startswith(other + ".") for other in names)]
+
+
+def in_modules(path: str, names: list[str]) -> bool:
+    """Whether the file at ``path`` belongs to one of the modules named."""
+    stem, dot, ext = path.rpartition(".")
+    dotted = (stem if dot and ext in ("py", "mpy") else path).replace("/", ".")
+    return any(dotted == name or dotted.startswith(name + ".") for name in names)
+
+
+def frozen_part(plan: Plan, spec: str, paths: list[str]) -> tuple[list[str], bool]:
+    """What of a package not to copy, as (modules, whole): the board's own rule, in omnipython's ``lib/omip.py``.
+
+    The modules are the ones the firmware has frozen in, where they would win,
+    and the ones it left out on purpose; ``whole`` is True when that is all of
+    them. A module built in counts only beside frozen ones, as a package may
+    extend a built-in module.
+    """
+    names = module_names(paths)
+    if not names or plan.firmware is None:
+        return [], False
+    answer = plan.firmware(names, plan.libs)
+    if answer is None:
+        return [], False
+    found, left_out = answer
+    if "frozen" not in found:
+        return [], False
+    missing = [n for n, f in zip(names, found) if f is None and n.split(".")[0] not in left_out]
+    if not missing:
+        plan.logs.append(f"Skipping {spec}: it's frozen into this firmware, and that copy runs ahead of one in {plan.libs}.")
+        return names, True
+    plan.logs.append(f"Installing only {', '.join(missing)} of {spec}: the firmware has the rest frozen in.")
+    return [n for n, f in zip(names, found) if f == "frozen" or (f is None and n not in missing)], False
+
+
 def _is_url(spec: str) -> bool:
     return spec.startswith(_URL_PREFIXES)
 
@@ -158,7 +211,9 @@ def walk(plan: Plan, spec: str, version: Optional[str], indexes: list[str], owne
     if _is_url(spec):
         url = _rewrite_url(spec, version)
         if spec.endswith((".py", ".mpy")):
-            plan.files.append(PlannedFile(spec.rsplit("/", 1)[-1], url, root=owner))
+            name = spec.rsplit("/", 1)[-1]
+            if not frozen_part(plan, spec, [name])[1]:
+                plan.files.append(PlannedFile(name, url, root=owner))
             return
         if not spec.endswith(".json"):
             url = url.rstrip("/") + "/package.json"
@@ -184,9 +239,18 @@ def walk(plan: Plan, spec: str, version: Optional[str], indexes: list[str], owne
         entry.folder = beside(plan.target, folder)
         if entry is plan.roots[0]:
             plan.libs = libs_for_app(plan.target)
-    for path, short_hash in body.get("hashes", ()):
+    hashes = list(body.get("hashes", ()))
+    urls = list(body.get("urls", ()))
+    if not folder:
+        drop, whole = frozen_part(plan, spec, [path for path, _ in hashes] + [path for path, _ in urls])
+        if whole:
+            hashes = urls = []
+        elif drop:
+            hashes = [h for h in hashes if not in_modules(h[0], drop)]
+            urls = [u for u in urls if not in_modules(u[0], drop)]
+    for path, short_hash in hashes:
         plan.files.append(PlannedFile(path, f"{source}/file/{short_hash[:2]}/{short_hash}", short_hash, owner))
-    for path, url in body.get("urls", ()):
+    for path, url in urls:
         if base and not _is_url(url):
             url = f"{base}/{url[2:] if url.startswith('./') else url}"
         plan.files.append(PlannedFile(path, _rewrite_url(url, version), root=owner))
