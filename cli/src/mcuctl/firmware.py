@@ -974,6 +974,13 @@ def _wslpath_w(p: str) -> str:
     return p
 
 
+def _windows_esptool(device: str) -> bool:
+    """Whether esptool runs on the Windows side: under WSL, for a COM port.
+    A /dev/tty device (a board attached to WSL with usbipd) is Linux's own,
+    so the Linux esptool opens it and reads Linux paths."""
+    return HOST == "wsl" and not str(device or "").startswith("/dev/")
+
+
 def _esptool_cmd(ns: argparse.Namespace) -> list[str]:
     """Resolve an esptool invocation for this host."""
     if ns.esptool:
@@ -982,7 +989,7 @@ def _esptool_cmd(ns: argparse.Namespace) -> list[str]:
         if val.endswith((".exe", "python", "python3")) or "python" in Path(val).name:
             return [val, "-m", "esptool"]
         return [val]
-    if HOST == "wsl":
+    if _windows_esptool(getattr(ns, "device", "")):
         # COM ports need Windows esptool.
         for cand in (str(HOME / "bin" / "python.exe"), "python.exe"):
             if shutil.which(cand) or Path(cand).is_file():
@@ -1209,7 +1216,8 @@ def _read_device_partition_table(
     """
     import tempfile
     tmp = Path(tempfile.gettempdir()) / f"mcuctl_pt_{os.getpid()}.bin"
-    out_arg = _wslpath_w(str(tmp)) if HOST == "wsl" else str(tmp)
+    device = base[base.index("-p") + 1] if "-p" in base else ""
+    out_arg = _wslpath_w(str(tmp)) if _windows_esptool(device) else str(tmp)
     if s2_rom_usb:
         tries = [["--no-stub", "--before", "no-reset"]]
     else:
@@ -1392,7 +1400,7 @@ def flash_esp32(ns: argparse.Namespace, mp: Optional[Path], artifact: Path) -> N
         emit_result(False, error=wrong_image)
         return
     fw = str(artifact)
-    if HOST == "wsl":
+    if _windows_esptool(ns.device):
         fw = _wslpath_w(fw)
     cmd = _esptool_cmd(ns)
     base = cmd + ["-b", str(ns.baud or 460800), "-p", ns.device]

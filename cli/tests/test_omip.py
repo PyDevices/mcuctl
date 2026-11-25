@@ -11,6 +11,7 @@ session and mpremote's own helpers. Only the board is a stand-in, a folder.
 from __future__ import annotations
 
 import argparse
+import ast
 import hashlib
 import http.server
 import io
@@ -62,6 +63,10 @@ class FolderBoard:
         self.root = root
         self.mpy = mpy
         self.writes: list[str] = []
+        # What the firmware has, by module name, and what it left out on purpose.
+        self.firmware: dict[str, str] = {}
+        self.left_out: tuple[str, ...] = ()
+        self.frozen_wins = True
 
     def _at(self, path: str) -> Path:
         return self.root / path.lstrip("/")
@@ -70,6 +75,11 @@ class FolderBoard:
         return b""
 
     def eval(self, expr, **kwargs):
+        if expr.startswith("_mcuctl_firmware("):
+            names = ast.literal_eval(expr[len("_mcuctl_firmware"):])[0]
+            if not self.frozen_wins:
+                return None
+            return ([self.firmware.get(n) for n in names], self.left_out)
         return self.mpy
 
     def fs_exists(self, path):
@@ -224,6 +234,44 @@ class HostWalk(Base):
         result = self.session.omip_install(["ourble"])
         self.assertEqual(self.board.writes, [])
         self.assertIn("Exists: /lib/aioble/core.mpy", result["output"])
+
+
+class FrozenOnTheBoard(Base):
+    def setUp(self):
+        super().setUp()
+        add_package(
+            self.ours_root, "6", "core", {"core/__init__.mpy": b"c", "core/a.mpy": b"a", "extra.mpy": b"e", "gone.mpy": b"g"},
+        )
+        add_package(self.ours_root, "6", "config", {"board_config.mpy": b"cfg"}, deps=[["core", "latest"]])
+
+    def test_a_package_the_firmware_froze_is_not_copied(self):
+        self.board.firmware = {"core": "frozen", "extra": "frozen", "gone": "frozen"}
+        result = self.session.omip_install(["config"])
+        self.assertEqual(sorted(self.on_board()), ["/lib/board_config.mpy"])
+        self.assertIn("Skipping core: it's frozen into this firmware", result["output"])
+
+    def test_only_what_a_partly_frozen_package_lacks_is_copied(self):
+        self.board.firmware = {"core": "frozen", "extra": "frozen"}
+        result = self.session.omip_install(["config"])
+        self.assertEqual(sorted(self.on_board()), ["/lib/board_config.mpy", "/lib/gone.mpy"])
+        self.assertIn("Installing only gone of core", result["output"])
+
+    def test_what_the_firmware_left_out_on_purpose_is_not_copied(self):
+        self.board.firmware = {"core": "frozen", "extra": "frozen"}
+        self.board.left_out = ("gone",)
+        self.session.omip_install(["config"])
+        self.assertEqual(sorted(self.on_board()), ["/lib/board_config.mpy"])
+
+    def test_a_target_ahead_of_frozen_gets_everything(self):
+        self.board.firmware = {"core": "frozen", "extra": "frozen", "gone": "frozen"}
+        self.board.frozen_wins = False
+        self.session.omip_install(["config"])
+        self.assertEqual(len(self.on_board()), 5)
+
+    def test_built_in_alone_still_installs(self):
+        self.board.firmware = {"core": "built-in", "extra": "built-in", "gone": "built-in"}
+        self.session.omip_install(["config"])
+        self.assertEqual(len(self.on_board()), 5)
 
 
 class AppPackage(Base):
