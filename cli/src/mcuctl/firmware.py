@@ -857,6 +857,7 @@ _BOOTLOADER_OFFSET_BY_MCU = {
     "esp32c61": "0x0",
     "esp32h2": "0x0",
     "esp32p4": "0x2000",
+    "esp32s31": "0x2000",
 }
 
 
@@ -872,6 +873,7 @@ _MCU_BY_IMAGE_CHIP_ID = {
     0x0012: "esp32p4",
     0x0014: "esp32c61",
     0x0017: "esp32c5",
+    0x0020: "esp32s31",
 }
 
 
@@ -904,7 +906,7 @@ def esp32_flash_offset(
          local MicroPython tree (``port_dir/boards/<board>/board.json``)
       2. upstream GitHub copy of the same file (download mode / no checkout)
     When that is absent, infers from ``board.json`` ``mcu`` / catalog ``family``
-    — classic/S2 at 0x1000, P4 at 0x2000, newer parts at 0x0.
+    — classic/S2 at 0x1000, P4, C5 and S31 at 0x2000, newer parts at 0x0.
     """
     if board and (port_dir or board_dir):
         bj = (board_dir or port_dir / "boards" / board) / "board.json"
@@ -947,10 +949,16 @@ def esp32_flash_offset(
     if not board:
         return "0x0"
     # Guess from board name when no tree / family (e.g. ESP32_GENERIC_S3).
+    # The chip is either joined on (ESP32S3_BOX) or a word of its own
+    # (ESP32_GENERIC_S31), and S31 is tried before S3.
     name = board.upper()
-    for key in ("ESP32P4", "ESP32C6", "ESP32C5", "ESP32C3", "ESP32C2", "ESP32S3", "ESP32S2", "ESP32"):
-        if key in name.replace("_", ""):
-            return esp32_flash_offset_for_family(key.lower())
+    joined = name.replace("_", "")
+    words = name.split("_")
+    for chip in ("S31", "P4", "C61", "C6", "C5", "C3", "C2", "H2", "S3", "S2"):
+        if "ESP32" + chip in joined or chip in words:
+            return esp32_flash_offset_for_family("esp32" + chip.lower())
+    if "ESP32" in joined:
+        return esp32_flash_offset_for_family("esp32")
     return "0x0"
 
 
@@ -1169,7 +1177,7 @@ def partition_table_from_image(artifact: Path, offset: Any = 0) -> Optional[byte
 def image_flash_offset(artifact: Path) -> int:
     """Where a firmware image is written, from its own first header: the
     chip's bootloader offset for a combined ``firmware.bin`` (0x1000 for a
-    classic ESP32 or S2, 0x2000 for a P4 or C5), and 0x0 for anything else,
+    classic ESP32 or S2, 0x2000 for a P4, C5 or S31), and 0x0 for anything else,
     a whole-flash image padded from 0x0 included."""
     family = esp32_image_family(artifact)
     return int(_BOOTLOADER_OFFSET_BY_MCU.get(family, "0x0"), 16) if family else 0
@@ -1357,12 +1365,27 @@ def flash_esp32(ns: argparse.Namespace, mp: Optional[Path], artifact: Path) -> N
         # An --artifact with no board: the image says which chip it is for. A
         # P4 image written at 0x0 instead of 0x2000 boot-loops (2026-10-05).
         family = esp32_image_family(artifact)
-    offset = (getattr(ns, "offset", "") or "").strip() or esp32_flash_offset(
-        port_dir,
-        ns.board or "",
-        family=family,
-        board_dir=find_board_dir(mp, ns.port, ns.board or ""),
-    )
+    offset = (getattr(ns, "offset", "") or "").strip()
+    if not offset:
+        offset = esp32_flash_offset(
+            port_dir,
+            ns.board or "",
+            family=family,
+            board_dir=find_board_dir(mp, ns.port, ns.board or ""),
+        )
+        # A merged firmware.bin names its chip in its first header, and the
+        # chip fixes where its bootloader goes. That beats a board.json or a
+        # guess from the board's name: an ESP32-S31 image written at 0x1000,
+        # because "ESP32_GENERIC_S31" starts with "ESP32", doesn't boot.
+        image_family = esp32_image_family(artifact)
+        if image_family and image_family in _BOOTLOADER_OFFSET_BY_MCU:
+            from_image = _BOOTLOADER_OFFSET_BY_MCU[image_family]
+            if int(from_image, 16) != int(str(offset), 0):
+                emit_log(
+                    f"[mcuctl] the image is for an {image_family}, whose bootloader is at "
+                    f"{from_image}, not {offset}: writing it at {from_image}"
+                )
+                offset = from_image
     emit_log(f"[mcuctl] flash offset {offset}")
     wrong_image = app_image_at_bootloader_error(artifact, offset)
     if wrong_image:
