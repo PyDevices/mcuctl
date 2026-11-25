@@ -20,11 +20,13 @@ from __future__ import annotations
 import struct
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 
 from mcuctl.firmware import (
     _PARTITION_TABLE_OFFSET,
     diff_partition_tables,
+    esp32_flash_offset,
     image_flash_offset,
     parse_partition_table,
     partition_table_from_image,
@@ -174,6 +176,18 @@ class OffsetImageTests(unittest.TestCase):
 
     def test_a_p4_image_is_written_at_0x2000(self):
         self.assertEqual(0x2000, image_flash_offset(firmware_bin(0x0012, 0x2000, GOOD)))
+
+    def test_an_s31_image_is_written_at_0x2000(self):
+        self.assertEqual(0x2000, image_flash_offset(firmware_bin(0x0020, 0x2000, GOOD)))
+
+    def test_an_s31_board_name_is_not_read_as_a_classic_esp32(self):
+        # "ESP32_GENERIC_S31" starts with "ESP32": the guess took it for 0x1000.
+        with mock.patch("mcuctl.firmware_download.resolve_remote_flash_offset", return_value=None), \
+                mock.patch("mcuctl.firmware_download.fetch_board_json", return_value=None):
+            self.assertEqual("0x2000", esp32_flash_offset(None, "ESP32_GENERIC_S31"))
+            self.assertEqual("0x0", esp32_flash_offset(None, "ESP32_GENERIC_S3"))
+            self.assertEqual("0x2000", esp32_flash_offset(None, "ESP32_GENERIC_P4"))
+            self.assertEqual("0x1000", esp32_flash_offset(None, "ESP32_GENERIC"))
 
     def test_an_s3_image_is_written_at_0x0(self):
         self.assertEqual(0, image_flash_offset(firmware_bin(0x0009, 0, GOOD)))
