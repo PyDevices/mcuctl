@@ -1,3 +1,6 @@
+## v0.2.1 (2026-11-26)
+
+
 ## v0.2.1rc1 (2026-11-25)
 
 - omip skips what the firmware froze; WSL flashes a usbipd board with Linux esptool (#265)
